@@ -1,0 +1,11 @@
+.git
+.gitignore
+.vscode
+__pycache__
+*.py[cod]
+*.tar
+*.zip
+.env
+models
+cache
+

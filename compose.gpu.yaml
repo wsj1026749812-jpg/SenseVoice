@@ -1,0 +1,20 @@
+name: sensevoice
+
+services:
+  sensevoice:
+    image: ${SENSEVOICE_IMAGE:-sensevoice:offline}
+    container_name: sensevoice
+    environment:
+      SENSEVOICE_DEVICE: cuda:0
+      MAX_CONCURRENT_REQUESTS: ${MAX_CONCURRENT_REQUESTS:-1}
+      BATCH_SIZE_S: ${BATCH_SIZE_S:-60}
+    ports:
+      - "${SENSEVOICE_BIND:-127.0.0.1}:${SENSEVOICE_PORT:-50000}:50000"
+    volumes:
+      - sensevoice-models:/models
+    gpus: all
+    restart: unless-stopped
+
+volumes:
+  sensevoice-models:
+    name: sensevoice-models
