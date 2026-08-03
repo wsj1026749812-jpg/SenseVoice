@@ -3,5 +3,9 @@ __pycache__/
 *.tar
 *.zip
 dist/
+lite/staging/
+lite/dist/
+lite/server/bin/
+lite/server/obj/
 models/
 cache/
