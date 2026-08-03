@@ -10,6 +10,11 @@ Extract the ZIP, open the extracted `SenseVoiceLite-windows-x64` directory,
 then double-click `Start-SenseVoiceLite.cmd`. It starts a local-only service at
 `http://127.0.0.1:50000`.
 
+Open `http://127.0.0.1:50000` in Edge or Chrome for the bundled microphone,
+file, speed, and reference-text accuracy test page. Browser microphone access
+works on the local address; a plain HTTP address on another LAN computer can
+upload files but cannot request microphone permission.
+
 To choose a port or bind to the LAN, run the deployment script from the
 extracted package directory:
 

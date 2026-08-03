@@ -52,6 +52,7 @@ if ($LASTEXITCODE -ne 0) {
 $stalePaths = @(
     (Join-Path $OutputDirectory "runtime"),
     (Join-Path $OutputDirectory "models"),
+    (Join-Path $OutputDirectory "wwwroot"),
     (Join-Path $OutputDirectory "logs"),
     (Join-Path $OutputDirectory "SenseVoiceLite.Server.exe"),
     (Join-Path $OutputDirectory "SenseVoiceLite.Server.pid"),
@@ -70,6 +71,7 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory, (Join-Path $OutputDi
 Copy-Item -LiteralPath (Join-Path $publishRoot "SenseVoiceLite.Server.exe") -Destination $OutputDirectory -Force
 Copy-Item -LiteralPath $runnerPath -Destination (Join-Path $OutputDirectory "runtime") -Force
 Copy-Item -LiteralPath $modelPath, $vadPath -Destination (Join-Path $OutputDirectory "models") -Force
+Copy-Item -LiteralPath (Join-Path $liteRoot "server\wwwroot") -Destination (Join-Path $OutputDirectory "wwwroot") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $liteRoot "Deploy-SenseVoiceLite.ps1"), (Join-Path $liteRoot "Stop-SenseVoiceLite.ps1"), (Join-Path $liteRoot "Start-SenseVoiceLite.cmd"), (Join-Path $liteRoot "README.md"), (Join-Path $liteRoot "THIRD_PARTY_NOTICES.md") -Destination $OutputDirectory -Force
 
 $manifestPath = Join-Path $OutputDirectory "SHA256SUMS.txt"

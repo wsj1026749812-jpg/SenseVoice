@@ -11,7 +11,10 @@ builder.WebHost.UseUrls(config.ListenUrl);
 var app = builder.Build();
 var inferenceGate = new SemaphoreSlim(1, 1);
 
-app.MapGet("/", () => Results.Ok(new { service = "sensevoice-lite", health = "/health" }));
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+app.MapGet("/api", () => Results.Ok(new { service = "sensevoice-lite", health = "/health" }));
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
