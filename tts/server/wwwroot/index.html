@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Piper TTS Lite</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">LOCAL CPU TEXT TO SPEECH</p>
+        <h1>Piper TTS Lite</h1>
+      </div>
+      <div id="health" class="health" aria-live="polite">检查服务中</div>
+    </header>
+
+    <section class="workspace" aria-label="语音合成工作台">
+      <section class="panel compose-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">单条合成</p>
+            <h2>输入文本</h2>
+          </div>
+          <label class="counter" for="text">0 / 2000</label>
+        </div>
+        <textarea id="text" maxlength="2000" spellcheck="false">您好，这是一段在本地 CPU 上运行的中文语音合成测试。</textarea>
+        <div class="control-grid">
+          <label class="control">
+            <span>语速</span>
+            <input id="length-scale" type="range" min="0.7" max="1.5" value="1" step="0.1">
+            <output id="length-scale-value">1.0x</output>
+          </label>
+          <label class="control">
+            <span>音色变化</span>
+            <input id="noise-scale" type="range" min="0" max="1.2" value="0.667" step="0.05">
+            <output id="noise-scale-value">0.67</output>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="synthesize" class="primary" type="button">生成语音</button>
+          <button id="stream" class="secondary" type="button">流式试播</button>
+          <button id="clear" class="icon-button" type="button" title="清空文本" aria-label="清空文本">×</button>
+        </div>
+        <p id="single-status" class="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">输出</p>
+            <h2>音频与指标</h2>
+          </div>
+          <a id="download" class="download is-hidden" href="#" download>下载 WAV</a>
+        </div>
+        <audio id="audio" controls class="is-hidden"></audio>
+        <div id="metrics" class="metrics empty">生成后显示音频时长、CPU 与实时系数。</div>
+        <p class="tip">流式接口返回 22.05 kHz 单声道 PCM，可直接用于本地实时播放或二次封装。</p>
+      </section>
+    </section>
+
+    <section class="benchmark section-band" aria-label="批量性能测试">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">BENCHMARK</p>
+          <h2>批量性能测试</h2>
+        </div>
+        <div class="batch-actions">
+          <label class="file-button" for="manifest">导入 JSON 测试集</label>
+          <input id="manifest" type="file" accept="application/json,.json" hidden>
+          <button id="load-sample" type="button" class="secondary">载入内置测试集</button>
+          <button id="run-batch" type="button" class="primary">开始测试</button>
+        </div>
+      </div>
+      <p id="batch-description" class="batch-description">内置测试集包含短句、长句与数字混读。测试会串行执行，以保持 CPU 占用可比较。</p>
+      <div id="batch-summary" class="summary empty">导入或载入测试集后开始。</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>用例</th><th>文本</th><th>音频</th><th>耗时</th><th>CPU</th><th>RTF</th><th>人工音质</th></tr>
+          </thead>
+          <tbody id="batch-body"><tr><td colspan="7" class="placeholder">暂无测试结果</td></tr></tbody>
+        </table>
+      </div>
+      <div class="export-actions">
+        <button id="export-json" type="button" class="secondary" disabled>导出 JSON 报告</button>
+        <button id="export-csv" type="button" class="secondary" disabled>导出 CSV 报告</button>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

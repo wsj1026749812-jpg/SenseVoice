@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SenseVoice Lite Test</title>
+  <link rel="stylesheet" href="/benchmark.css">
   <style>
     :root { --ink:#18212f; --muted:#667085; --line:#d7dde4; --paper:#fff; --ground:#f4f6f8; --teal:#0c8a7d; --teal-dark:#08645b; --coral:#d8563f; --gold:#d79218; --shadow:0 12px 28px rgba(24,33,47,.08); }
     * { box-sizing:border-box; }
@@ -56,5 +57,6 @@
     function reset() { if(state.previewUrl)URL.revokeObjectURL(state.previewUrl);Object.assign(state,{wav:null,duration:0,filename:"audio.wav",previewUrl:null});ui.file.value="";ui.preview.innerHTML="";ui.name.textContent="No audio selected";ui.waveLabel.textContent="16 kHz mono WAV";ui.run.disabled=true;ui.result.textContent="No result";ui.result.dataset.text="";ui.result.classList.add("placeholder");ui.tags.innerHTML="";ui.resultMeta.textContent="";ui.reference.value="";[ui.duration,ui.service,ui.speed,ui.accuracy].forEach(element=>element.textContent="--");setError();setStatus("ready","Ready");paintWave(); }
     ui.file.addEventListener("change",async event=>{const file=event.target.files[0];if(!file)return;try{await setAudio(file,file.name);}catch(error){setStatus("error","Audio error");setError(`Audio conversion failed: ${error.message}`);}});ui.record.addEventListener("click",record);ui.stop.addEventListener("click",stop);ui.run.addEventListener("click",transcribe);ui.reset.addEventListener("click",reset);ui.reference.addEventListener("input",updateAccuracy);window.addEventListener("resize",paintWave);paintWave();
   </script>
+  <script src="/benchmark.js"></script>
 </body>
 </html>

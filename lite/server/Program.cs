@@ -20,6 +20,11 @@ app.MapGet("/health", () => Results.Ok(new
     status = "ok",
     device = "cpu",
     runtime = "llama.cpp/GGUF",
+    streaming = new
+    {
+        supported = false,
+        detail = "The bundled GGUF runtime provides offline WAV inference only."
+    },
     model = Path.GetFileName(config.ModelPath),
     vad_model = Path.GetFileName(config.VadModelPath),
 }));
@@ -135,6 +140,7 @@ static class NativeRunner
 
     public static async Task<TranscriptionResult> TranscribeAsync(ServiceConfig config, string inputPath, string filename)
     {
+        var stopwatch = Stopwatch.StartNew();
         var startInfo = new ProcessStartInfo
         {
             FileName = config.RunnerPath,
@@ -160,6 +166,9 @@ static class NativeRunner
         await process.WaitForExitAsync();
         var output = await outputTask;
         var error = await errorTask;
+        stopwatch.Stop();
+        var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
+        var cpuCoreEquivalents = cpuTimeMs / Math.Max(stopwatch.Elapsed.TotalMilliseconds, 1);
 
         if (process.ExitCode != 0)
         {
@@ -188,6 +197,11 @@ static class NativeRunner
             Emotion = tags.ElementAtOrDefault(1),
             Event = tags.ElementAtOrDefault(2),
             Itn = tags.ElementAtOrDefault(3),
+            InferenceMs = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 1),
+            CpuTimeMs = Math.Round(cpuTimeMs, 1),
+            CpuUtilizationPercent = Math.Round(cpuCoreEquivalents / Environment.ProcessorCount * 100, 1),
+            CpuCoreEquivalents = Math.Round(cpuCoreEquivalents, 2),
+            ProcessorCount = Environment.ProcessorCount,
         };
     }
 }
@@ -219,4 +233,19 @@ sealed class TranscriptionResult
 
     [JsonPropertyName("itn")]
     public string? Itn { get; init; }
+
+    [JsonPropertyName("inference_ms")]
+    public required double InferenceMs { get; init; }
+
+    [JsonPropertyName("cpu_time_ms")]
+    public required double CpuTimeMs { get; init; }
+
+    [JsonPropertyName("cpu_utilization_percent")]
+    public required double CpuUtilizationPercent { get; init; }
+
+    [JsonPropertyName("cpu_core_equivalents")]
+    public required double CpuCoreEquivalents { get; init; }
+
+    [JsonPropertyName("processor_count")]
+    public required int ProcessorCount { get; init; }
 }
