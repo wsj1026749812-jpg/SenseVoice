@@ -11,10 +11,9 @@ then double-click `Start-SenseVoiceLite.cmd`. It starts a local-only service at
 `http://127.0.0.1:50000`.
 
 Open `http://127.0.0.1:50000` in Edge or Chrome for the bundled microphone,
-file, speed, and reference-text accuracy test page. It also provides serial
-batch benchmarking with JSON/CSV report export. Browser microphone access works
-on the local address; a plain HTTP address on another LAN computer can upload
-files but cannot request microphone permission.
+file, single-run resource metrics, speed, and reference-text accuracy page.
+Browser microphone access works on the local address; a plain HTTP address on
+another LAN computer can upload files but cannot request microphone permission.
 
 To choose a port or bind to the LAN, run the deployment script from the
 extracted package directory:
@@ -47,5 +46,7 @@ Use `Stop-SenseVoiceLite.ps1` to stop the background service.
 - `inference_ms`, `cpu_time_ms`, and `cpu_utilization_percent` are returned for
   every transcription. CPU percentage is normalized across logical processors;
   `cpu_core_equivalents` reports the corresponding multi-core process load.
+- `peak_working_set_mb` reports the native inference process's peak resident
+  memory. `memory_utilization_percent` divides that peak by total physical RAM.
 - The bundled GGUF runtime is offline-only. `/health` reports streaming as not
-  supported, so streaming is not included in its benchmark report.
+  supported.

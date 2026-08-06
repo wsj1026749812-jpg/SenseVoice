@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -277,6 +278,9 @@ static class NativeRunner
                 CpuUtilizationPercent = metrics.CpuUtilizationPercent,
                 CpuCoreEquivalents = metrics.CpuCoreEquivalents,
                 ProcessorCount = metrics.ProcessorCount,
+                PeakWorkingSetMb = metrics.PeakWorkingSetMb,
+                TotalPhysicalMemoryMb = metrics.TotalPhysicalMemoryMb,
+                MemoryUtilizationPercent = metrics.MemoryUtilizationPercent,
                 RealTimeFactor = Math.Round(metrics.ElapsedMs / Math.Max(audioDurationMs, 1), 4),
                 CharactersPerSecond = Math.Round(input.Text.Length / Math.Max(metrics.ElapsedMs / 1000, 0.001), 2),
             };
@@ -356,6 +360,8 @@ static class NativeRunner
             var standardError = await errorTask;
             stopwatch.Stop();
             var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
+            var peakWorkingSetBytes = process.PeakWorkingSet64;
+            var totalPhysicalMemoryBytes = SystemMemory.GetTotalPhysicalMemoryBytes();
 
             if (process.ExitCode != 0)
             {
@@ -370,7 +376,10 @@ static class NativeRunner
                 Math.Round(cpuTimeMs, 1),
                 Math.Round(cpuCoreEquivalents / Environment.ProcessorCount * 100, 1),
                 Math.Round(cpuCoreEquivalents, 2),
-                Environment.ProcessorCount);
+                Environment.ProcessorCount,
+                Math.Round(peakWorkingSetBytes / 1024d / 1024d, 1),
+                Math.Round(totalPhysicalMemoryBytes / 1024d / 1024d, 1),
+                Math.Round(peakWorkingSetBytes / (double)Math.Max(totalPhysicalMemoryBytes, 1) * 100, 2));
         }
     }
 }
@@ -380,7 +389,37 @@ sealed record ProcessMetrics(
     double CpuTimeMs,
     double CpuUtilizationPercent,
     double CpuCoreEquivalents,
-    int ProcessorCount);
+    int ProcessorCount,
+    double PeakWorkingSetMb,
+    double TotalPhysicalMemoryMb,
+    double MemoryUtilizationPercent);
+
+static class SystemMemory
+{
+    public static long GetTotalPhysicalMemoryBytes()
+    {
+        var status = new MemoryStatusEx();
+        return GlobalMemoryStatusEx(status) ? checked((long)status.TotalPhysical) : 0;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx status);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private sealed class MemoryStatusEx
+    {
+        public uint Length = (uint)Marshal.SizeOf<MemoryStatusEx>();
+        public uint MemoryLoad;
+        public ulong TotalPhysical;
+        public ulong AvailablePhysical;
+        public ulong TotalPageFile;
+        public ulong AvailablePageFile;
+        public ulong TotalVirtual;
+        public ulong AvailableVirtual;
+        public ulong AvailableExtendedVirtual;
+    }
+}
 
 static class WavReader
 {
@@ -470,6 +509,15 @@ sealed class TtsResult
 
     [JsonPropertyName("processor_count")]
     public required int ProcessorCount { get; init; }
+
+    [JsonPropertyName("peak_working_set_mb")]
+    public required double PeakWorkingSetMb { get; init; }
+
+    [JsonPropertyName("total_physical_memory_mb")]
+    public required double TotalPhysicalMemoryMb { get; init; }
+
+    [JsonPropertyName("memory_utilization_percent")]
+    public required double MemoryUtilizationPercent { get; init; }
 
     [JsonPropertyName("real_time_factor")]
     public required double RealTimeFactor { get; init; }

@@ -11,7 +11,7 @@ WSL, GPU, Python, or internet connection.
 Extract `PiperTtsLite-windows-x64.zip`, then double-click
 `Start-PiperTtsLite.cmd`. It starts a local-only service at
 `http://127.0.0.1:50100`. Open that address in Edge or Chrome for the bundled
-text-to-speech, streaming playback, batch test, and report-export page.
+text-to-speech, streaming playback, and single-run resource metrics page.
 
 To use another port or allow LAN clients:
 
@@ -39,8 +39,9 @@ Invoke-RestMethod http://127.0.0.1:50100/api/v1/tts -Method Post -ContentType "a
 
 The response contains `audio_url`, `audio_duration_ms`, `inference_ms`,
 `cpu_time_ms`, `cpu_utilization_percent`, `real_time_factor`, and
-`characters_per_second`. `real_time_factor` below `1` means the generated
-audio is longer than the wall-clock synthesis time.
+`characters_per_second`. It also contains `peak_working_set_mb` and
+`memory_utilization_percent` for the Piper process. `real_time_factor` below
+`1` means the generated audio is longer than the wall-clock synthesis time.
 
 `cpu_utilization_percent` is normalized across all logical processors, matching
 the machine-wide percentage users expect from Task Manager. The separate
@@ -54,24 +55,6 @@ headers `X-Audio-Sample-Rate` and `X-Audio-Channels` describe the stream.
 ```powershell
 curl.exe -X POST http://127.0.0.1:50100/api/v1/tts/stream -H "Content-Type: application/json" -d "{\"text\":\"流式语音测试\"}" --output output.pcm
 ```
-
-## Batch Reports
-
-The browser page has an internal Chinese test set and accepts a JSON test set
-with either a top-level array or `{ "cases": [...] }`:
-
-```json
-[
-  { "id": "short", "text": "欢迎使用本地语音合成服务。" },
-  { "id": "slow", "text": "这条用例以较慢语速合成。", "length_scale": 1.3 }
-]
-```
-
-The browser runs cases serially, provides audio players and optional 1-5 human
-quality scores, then exports JSON or CSV. TTS does not have a truthful
-automatic “accuracy” value: text is its input rather than a prediction. The
-report therefore records success, time, CPU, audio duration, throughput, and
-real-time factor; `manual_quality` is kept separate for listening evaluation.
 
 `SHA256SUMS.txt` verifies files after extraction. The adjacent `.zip.sha256`
 verifies the downloaded archive.

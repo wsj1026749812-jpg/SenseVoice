@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -169,6 +170,8 @@ static class NativeRunner
         stopwatch.Stop();
         var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
         var cpuCoreEquivalents = cpuTimeMs / Math.Max(stopwatch.Elapsed.TotalMilliseconds, 1);
+        var peakWorkingSetBytes = process.PeakWorkingSet64;
+        var totalPhysicalMemoryBytes = SystemMemory.GetTotalPhysicalMemoryBytes();
 
         if (process.ExitCode != 0)
         {
@@ -202,7 +205,37 @@ static class NativeRunner
             CpuUtilizationPercent = Math.Round(cpuCoreEquivalents / Environment.ProcessorCount * 100, 1),
             CpuCoreEquivalents = Math.Round(cpuCoreEquivalents, 2),
             ProcessorCount = Environment.ProcessorCount,
+            PeakWorkingSetMb = Math.Round(peakWorkingSetBytes / 1024d / 1024d, 1),
+            TotalPhysicalMemoryMb = Math.Round(totalPhysicalMemoryBytes / 1024d / 1024d, 1),
+            MemoryUtilizationPercent = Math.Round(peakWorkingSetBytes / (double)Math.Max(totalPhysicalMemoryBytes, 1) * 100, 2),
         };
+    }
+}
+
+static class SystemMemory
+{
+    public static long GetTotalPhysicalMemoryBytes()
+    {
+        var status = new MemoryStatusEx();
+        return GlobalMemoryStatusEx(status) ? checked((long)status.TotalPhysical) : 0;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx status);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private sealed class MemoryStatusEx
+    {
+        public uint Length = (uint)Marshal.SizeOf<MemoryStatusEx>();
+        public uint MemoryLoad;
+        public ulong TotalPhysical;
+        public ulong AvailablePhysical;
+        public ulong TotalPageFile;
+        public ulong AvailablePageFile;
+        public ulong TotalVirtual;
+        public ulong AvailableVirtual;
+        public ulong AvailableExtendedVirtual;
     }
 }
 
@@ -248,4 +281,13 @@ sealed class TranscriptionResult
 
     [JsonPropertyName("processor_count")]
     public required int ProcessorCount { get; init; }
+
+    [JsonPropertyName("peak_working_set_mb")]
+    public required double PeakWorkingSetMb { get; init; }
+
+    [JsonPropertyName("total_physical_memory_mb")]
+    public required double TotalPhysicalMemoryMb { get; init; }
+
+    [JsonPropertyName("memory_utilization_percent")]
+    public required double MemoryUtilizationPercent { get; init; }
 }

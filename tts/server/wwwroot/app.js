@@ -1,15 +1,7 @@
 const state = {
-  batchCases: [],
-  batchResults: [],
   audioContext: null,
   streamNextTime: 0,
 };
-
-const builtInCases = [
-  { id: "short-zh", text: "您好，欢迎使用本地中文语音合成服务。" },
-  { id: "number-mix", text: "今天是二零二六年八月六日，订单编号为 SV-1024，金额一百二十八点五元。" },
-  { id: "paragraph-zh", text: "本测试在不使用 GPU、Docker 或外部网络服务的条件下运行。它记录端到端合成耗时、进程 CPU 时间、生成音频时长和实时系数，方便比较不同电脑的本地推理性能。" },
-];
 
 const $ = (selector) => document.querySelector(selector);
 const textInput = $("#text");
@@ -40,7 +32,6 @@ function setStatus(message, isError = false) {
 function setBusy(busy, message = "") {
   $("#synthesize").disabled = busy;
   $("#stream").disabled = busy;
-  $("#run-batch").disabled = busy || !state.batchCases.length;
   if (message) setStatus(message);
 }
 
@@ -69,9 +60,12 @@ async function api(url, body) {
 function showMetrics(result) {
   const metrics = [
     ["音频时长", `${decimal(result.audio_duration_ms / 1000, 2)} s`],
-    ["端到端耗时", formatMs(result.inference_ms)],
+    ["合成耗时", formatMs(result.inference_ms)],
+    ["CPU 时间", formatMs(result.cpu_time_ms)],
     ["CPU 占用", `${decimal(result.cpu_utilization_percent)}%`],
-    ["逻辑核心占用", `${decimal(result.cpu_core_equivalents, 2)} 核`],
+    ["逻辑核心占用", `${decimal(result.cpu_core_equivalents, 2)} / ${result.processor_count} 核`],
+    ["峰值内存", `${decimal(result.peak_working_set_mb)} MB`],
+    ["内存占用率", `${decimal(result.memory_utilization_percent, 2)}%`],
     ["实时系数", decimal(result.real_time_factor, 3)],
     ["字符吞吐", `${decimal(result.characters_per_second)} 字/秒`],
     ["采样率", `${result.sample_rate} Hz`],
@@ -169,150 +163,6 @@ async function streamAudio() {
   }
 }
 
-function renderBatch() {
-  const body = $("#batch-body");
-  if (!state.batchResults.length) {
-    body.innerHTML = '<tr><td colspan="7" class="placeholder">暂无测试结果</td></tr>';
-    return;
-  }
-  body.innerHTML = state.batchResults.map((result, index) => {
-    if (result.error) {
-      return `<tr><td>${escapeHtml(result.id)}</td><td class="row-text">${escapeHtml(result.text)}</td><td colspan="5" class="status error">${escapeHtml(result.error)}</td></tr>`;
-    }
-    return `<tr>
-      <td>${escapeHtml(result.id)}</td>
-      <td class="row-text">${escapeHtml(result.text)}</td>
-      <td><audio class="row-audio" controls src="${result.audio_url}"></audio></td>
-      <td>${formatMs(result.inference_ms)}<br><small>${decimal(result.characters_per_second)} 字/秒</small></td>
-      <td>${decimal(result.cpu_utilization_percent)}%</td>
-      <td>${decimal(result.real_time_factor, 3)}</td>
-      <td><select class="rating" data-index="${index}" aria-label="${escapeHtml(result.id)} 人工音质评分"><option value="">未评分</option><option value="1">1 / 5</option><option value="2">2 / 5</option><option value="3">3 / 5</option><option value="4">4 / 5</option><option value="5">5 / 5</option></select></td>
-    </tr>`;
-  }).join("");
-  body.querySelectorAll(".rating").forEach((select) => {
-    select.value = state.batchResults[Number(select.dataset.index)].manual_quality || "";
-    select.addEventListener("change", () => {
-      state.batchResults[Number(select.dataset.index)].manual_quality = select.value ? Number(select.value) : null;
-      updateSummary();
-    });
-  });
-}
-
-function updateSummary() {
-  const completed = state.batchResults.filter((item) => !item.error);
-  const sum = (field) => completed.reduce((total, item) => total + Number(item[field] || 0), 0);
-  const rated = completed.filter((item) => item.manual_quality);
-  const totalElapsed = sum("inference_ms");
-  const totalAudio = sum("audio_duration_ms");
-  const processorCount = completed[0]?.processor_count || 1;
-  const values = [
-    ["完成", `${completed.length} / ${state.batchResults.length}`],
-    ["合成总耗时", formatMs(totalElapsed)],
-    ["音频总时长", `${decimal(totalAudio / 1000, 2)} s`],
-    ["加权 CPU", completed.length ? `${decimal(sum("cpu_time_ms") / Math.max(totalElapsed * processorCount, 1) * 100)}%` : "-"],
-    ["人工音质均分", rated.length ? `${decimal(rated.reduce((total, item) => total + item.manual_quality, 0) / rated.length, 2)} / 5` : "未评分"],
-  ];
-  const summary = $("#batch-summary");
-  summary.classList.remove("empty");
-  summary.innerHTML = values.map(([label, value]) => `<div class="summary-item"><span>${label}</span><strong>${value}</strong></div>`).join("");
-}
-
-async function runBatch() {
-  if (!state.batchCases.length) return;
-  state.batchResults = [];
-  renderBatch();
-  setBusy(true, "批量测试准备中...");
-  for (let index = 0; index < state.batchCases.length; index += 1) {
-    const testCase = state.batchCases[index];
-    setStatus(`正在测试 ${index + 1} / ${state.batchCases.length}: ${testCase.id}`);
-    try {
-      const response = await api("/api/v1/tts", {
-        text: testCase.text,
-        length_scale: Number(testCase.length_scale || 1),
-        noise_scale: Number(testCase.noise_scale || 0.667),
-        noise_w_scale: Number(testCase.noise_w_scale || 0.8),
-      });
-      state.batchResults.push({ id: testCase.id, ...await response.json(), manual_quality: null });
-    } catch (error) {
-      state.batchResults.push({ id: testCase.id, text: testCase.text, error: error.message, manual_quality: null });
-    }
-    renderBatch();
-    updateSummary();
-  }
-  $("#export-json").disabled = !state.batchResults.length;
-  $("#export-csv").disabled = !state.batchResults.length;
-  setBusy(false);
-  setStatus(`批量测试完成：${state.batchResults.filter((item) => !item.error).length} 条成功。`);
-}
-
-function loadCases(cases, description) {
-  const validated = cases.map((item, index) => ({
-    id: String(item.id || `case-${index + 1}`),
-    text: String(item.text || "").trim(),
-    length_scale: item.length_scale,
-    noise_scale: item.noise_scale,
-    noise_w_scale: item.noise_w_scale,
-  })).filter((item) => item.text);
-  if (!validated.length) throw new Error("测试集至少需要一条含 text 的记录。");
-  if (validated.some((item) => item.text.length > 2000)) throw new Error("每条测试文本必须少于 2000 个字符。");
-  state.batchCases = validated;
-  state.batchResults = [];
-  renderBatch();
-  $("#batch-description").textContent = description || `已载入 ${validated.length} 条测试用例。`;
-  $("#batch-summary").className = "summary empty";
-  $("#batch-summary").textContent = `已载入 ${validated.length} 条测试用例，点击“开始测试”。`;
-  $("#run-batch").disabled = false;
-  $("#export-json").disabled = true;
-  $("#export-csv").disabled = true;
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
-}
-
-function report() {
-  const success = state.batchResults.filter((item) => !item.error);
-  const totalInferenceMs = success.reduce((sum, item) => sum + item.inference_ms, 0);
-  const processorCount = success[0]?.processor_count || null;
-  return {
-    report_type: "Piper TTS Lite CPU benchmark",
-    generated_at: new Date().toISOString(),
-    device: "cpu",
-    runtime: "Piper/ONNX Runtime",
-    streaming_tested: false,
-    note: "TTS has no automatic text accuracy metric. Optional manual_quality is a listener score from 1 to 5.",
-    summary: {
-      total_cases: state.batchResults.length,
-      successful_cases: success.length,
-      total_inference_ms: totalInferenceMs,
-      total_audio_duration_ms: success.reduce((sum, item) => sum + item.audio_duration_ms, 0),
-      processor_count: processorCount,
-      weighted_cpu_utilization_percent: success.length ? success.reduce((sum, item) => sum + item.cpu_time_ms, 0) / Math.max(totalInferenceMs * (processorCount || 1), 1) * 100 : null,
-    },
-    results: state.batchResults,
-  };
-}
-
-function downloadBlob(content, name, type) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-function exportJson() {
-  downloadBlob(JSON.stringify(report(), null, 2), `piper-tts-benchmark-${Date.now()}.json`, "application/json");
-}
-
-function exportCsv() {
-  const headers = ["id", "text", "filename", "audio_duration_ms", "inference_ms", "cpu_time_ms", "cpu_utilization_percent", "real_time_factor", "characters_per_second", "manual_quality", "error"];
-  const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-  const rows = state.batchResults.map((item) => headers.map((header) => quote(item[header])).join(","));
-  downloadBlob(`\ufeff${headers.join(",")}\n${rows.join("\n")}`, `piper-tts-benchmark-${Date.now()}.csv`, "text/csv;charset=utf-8");
-}
-
 async function checkHealth() {
   try {
     const health = await (await fetch("/health", { cache: "no-store" })).json();
@@ -329,21 +179,6 @@ $("#noise-scale").addEventListener("input", updateSliders);
 $("#synthesize").addEventListener("click", synthesize);
 $("#stream").addEventListener("click", streamAudio);
 $("#clear").addEventListener("click", () => { textInput.value = ""; updateCounter(); textInput.focus(); });
-$("#load-sample").addEventListener("click", () => loadCases(builtInCases, "已载入内置中文性能测试集。测试将串行执行，以保持 CPU 指标可比较。"));
-$("#run-batch").addEventListener("click", runBatch);
-$("#export-json").addEventListener("click", exportJson);
-$("#export-csv").addEventListener("click", exportCsv);
-$("#manifest").addEventListener("change", async (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
-  try {
-    const parsed = JSON.parse(await file.text());
-    loadCases(Array.isArray(parsed) ? parsed : parsed.cases, `已导入 ${file.name}。测试将串行执行。`);
-  } catch (error) {
-    setStatus(`导入失败：${error.message}`, true);
-  }
-});
-
 updateCounter();
 updateSliders();
 checkHealth();

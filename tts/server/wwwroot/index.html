@@ -60,34 +60,6 @@
       </section>
     </section>
 
-    <section class="benchmark section-band" aria-label="批量性能测试">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">BENCHMARK</p>
-          <h2>批量性能测试</h2>
-        </div>
-        <div class="batch-actions">
-          <label class="file-button" for="manifest">导入 JSON 测试集</label>
-          <input id="manifest" type="file" accept="application/json,.json" hidden>
-          <button id="load-sample" type="button" class="secondary">载入内置测试集</button>
-          <button id="run-batch" type="button" class="primary">开始测试</button>
-        </div>
-      </div>
-      <p id="batch-description" class="batch-description">内置测试集包含短句、长句与数字混读。测试会串行执行，以保持 CPU 占用可比较。</p>
-      <div id="batch-summary" class="summary empty">导入或载入测试集后开始。</div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>用例</th><th>文本</th><th>音频</th><th>耗时</th><th>CPU</th><th>RTF</th><th>人工音质</th></tr>
-          </thead>
-          <tbody id="batch-body"><tr><td colspan="7" class="placeholder">暂无测试结果</td></tr></tbody>
-        </table>
-      </div>
-      <div class="export-actions">
-        <button id="export-json" type="button" class="secondary" disabled>导出 JSON 报告</button>
-        <button id="export-csv" type="button" class="secondary" disabled>导出 CSV 报告</button>
-      </div>
-    </section>
   </main>
   <script src="/app.js"></script>
 </body>
