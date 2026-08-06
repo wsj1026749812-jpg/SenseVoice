@@ -70,6 +70,10 @@ app.MapPost("/api/v1/tts", async (HttpRequest request, CancellationToken cancell
     {
         return Results.UnprocessableEntity(new { detail = exception.Message });
     }
+    catch (Exception exception)
+    {
+        return Results.Json(new { detail = $"TTS request failed: {exception.Message}" }, statusCode: StatusCodes.Status500InternalServerError);
+    }
     finally
     {
         inferenceGate.Release();
@@ -353,6 +357,7 @@ static class NativeRunner
         using (process)
         {
             var stopwatch = Stopwatch.StartNew();
+            var peakWorkingSetTask = ProcessMemory.TrackPeakWorkingSetAsync(process, cancellationToken);
             var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
@@ -360,7 +365,7 @@ static class NativeRunner
             var standardError = await errorTask;
             stopwatch.Stop();
             var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
-            var peakWorkingSetBytes = process.PeakWorkingSet64;
+            var peakWorkingSetBytes = await peakWorkingSetTask;
             var totalPhysicalMemoryBytes = SystemMemory.GetTotalPhysicalMemoryBytes();
 
             if (process.ExitCode != 0)
@@ -398,18 +403,29 @@ static class SystemMemory
 {
     public static long GetTotalPhysicalMemoryBytes()
     {
-        var status = new MemoryStatusEx();
-        return GlobalMemoryStatusEx(status) ? checked((long)status.TotalPhysical) : 0;
+        try
+        {
+            var status = new MemoryStatusEx { Length = (uint)Marshal.SizeOf<MemoryStatusEx>() };
+            if (GlobalMemoryStatusEx(ref status) && status.TotalPhysical <= long.MaxValue)
+            {
+                return (long)status.TotalPhysical;
+            }
+        }
+        catch
+        {
+            // Keep inference successful even when Windows memory metadata is unavailable.
+        }
+        return Math.Max(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes, 1);
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx status);
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx status);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-    private sealed class MemoryStatusEx
+    private struct MemoryStatusEx
     {
-        public uint Length = (uint)Marshal.SizeOf<MemoryStatusEx>();
+        public uint Length;
         public uint MemoryLoad;
         public ulong TotalPhysical;
         public ulong AvailablePhysical;
@@ -418,6 +434,27 @@ static class SystemMemory
         public ulong TotalVirtual;
         public ulong AvailableVirtual;
         public ulong AvailableExtendedVirtual;
+    }
+}
+
+static class ProcessMemory
+{
+    public static async Task<long> TrackPeakWorkingSetAsync(Process process, CancellationToken cancellationToken)
+    {
+        long peak = 0;
+        while (true)
+        {
+            try
+            {
+                if (process.HasExited) return peak;
+                peak = Math.Max(peak, process.WorkingSet64);
+            }
+            catch (InvalidOperationException)
+            {
+                return peak;
+            }
+            await Task.Delay(25, cancellationToken);
+        }
     }
 }
 
