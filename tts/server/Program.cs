@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -11,6 +12,7 @@ var builder = WebApplication.CreateSlimBuilder(args);
 builder.WebHost.UseUrls(config.ListenUrl);
 var app = builder.Build();
 var inferenceGate = new SemaphoreSlim(1, 1);
+var streamMetrics = new ConcurrentDictionary<string, StreamMetricState>();
 
 Directory.CreateDirectory(config.OutputDirectory);
 
@@ -90,6 +92,13 @@ app.MapPost("/api/v1/tts/stream", async (HttpContext context, CancellationToken 
         return;
     }
 
+    var requestId = Guid.NewGuid().ToString("N");
+    streamMetrics[requestId] = new StreamMetricState(DateTime.UtcNow, null, null);
+    foreach (var stale in streamMetrics.Where(item => item.Value.CreatedAt < DateTime.UtcNow.AddHours(-1)).ToArray())
+    {
+        streamMetrics.TryRemove(stale.Key, out _);
+    }
+
     await inferenceGate.WaitAsync(cancellationToken);
     try
     {
@@ -97,21 +106,49 @@ app.MapPost("/api/v1/tts/stream", async (HttpContext context, CancellationToken 
         context.Response.ContentType = "audio/L16";
         context.Response.Headers.Append("X-Audio-Sample-Rate", config.SampleRate.ToString());
         context.Response.Headers.Append("X-Audio-Channels", "1");
+        context.Response.Headers.Append("X-Stream-Request-Id", requestId);
+        context.Response.Headers.Append("Access-Control-Expose-Headers", "X-Audio-Sample-Rate, X-Audio-Channels, X-Stream-Request-Id");
         context.Response.Headers.Append("Cache-Control", "no-store");
-        await NativeRunner.StreamAsync(config, synthesisRequest.Value!, context.Response.Body, cancellationToken);
+        var metrics = await NativeRunner.StreamAsync(config, synthesisRequest.Value!, context.Response.Body, cancellationToken);
+        streamMetrics[requestId] = new StreamMetricState(DateTime.UtcNow, metrics, null);
     }
     catch (NativeInferenceException exception)
     {
+        streamMetrics[requestId] = new StreamMetricState(DateTime.UtcNow, null, exception.Message);
         if (!context.Response.HasStarted)
         {
             context.Response.StatusCode = StatusCodes.Status422UnprocessableEntity;
             await context.Response.WriteAsJsonAsync(new { detail = exception.Message }, cancellationToken);
         }
     }
+    catch (Exception exception)
+    {
+        streamMetrics[requestId] = new StreamMetricState(DateTime.UtcNow, null, exception.Message);
+        if (!context.Response.HasStarted)
+        {
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await context.Response.WriteAsJsonAsync(new { detail = $"TTS streaming failed: {exception.Message}" }, cancellationToken);
+        }
+    }
     finally
     {
         inferenceGate.Release();
     }
+});
+
+app.MapGet("/api/v1/tts/stream/metrics/{requestId}", (string requestId) =>
+{
+    if (!streamMetrics.TryGetValue(requestId, out var state))
+    {
+        return Results.NotFound(new { detail = "Unknown or expired stream request ID." });
+    }
+    if (state.Error is not null)
+    {
+        return Results.Json(new { status = "error", detail = state.Error }, statusCode: StatusCodes.Status500InternalServerError);
+    }
+    return state.Metrics is null
+        ? Results.Json(new { status = "pending" }, statusCode: StatusCodes.Status202Accepted)
+        : Results.Ok(new { status = "complete", metrics = state.Metrics });
 });
 
 app.MapGet("/audio/{fileName}", (string fileName) =>
@@ -146,6 +183,8 @@ static void CleanupExpiredAudio(string outputDirectory)
         }
     }
 }
+
+sealed record StreamMetricState(DateTime CreatedAt, ProcessMetrics? Metrics, string? Error);
 
 sealed record ServiceConfig(
     string ListenUrl,
@@ -296,17 +335,23 @@ static class NativeRunner
         }
     }
 
-    public static async Task StreamAsync(ServiceConfig config, TtsInput input, Stream output, CancellationToken cancellationToken)
+    public static async Task<ProcessMetrics> StreamAsync(ServiceConfig config, TtsInput input, Stream output, CancellationToken cancellationToken)
     {
         using var process = StartProcess(config, input, outputPath: null, stream: true);
+        var stopwatch = Stopwatch.StartNew();
+        var peakWorkingSetTask = ProcessMemory.TrackPeakWorkingSetAsync(process, cancellationToken);
         var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
         var copyTask = process.StandardOutput.BaseStream.CopyToAsync(output, cancellationToken);
         await Task.WhenAll(copyTask, process.WaitForExitAsync(cancellationToken));
         var error = await errorTask;
+        stopwatch.Stop();
+        var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
+        var peakWorkingSetBytes = await peakWorkingSetTask;
         if (process.ExitCode != 0)
         {
             throw new NativeInferenceException($"Piper streaming synthesis failed: {error.Trim()}");
         }
+        return CreateMetrics(stopwatch.Elapsed.TotalMilliseconds, cpuTimeMs, peakWorkingSetBytes);
     }
 
     private static Process StartProcess(ServiceConfig config, TtsInput input, string? outputPath, bool stream)
@@ -366,7 +411,6 @@ static class NativeRunner
             stopwatch.Stop();
             var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
             var peakWorkingSetBytes = await peakWorkingSetTask;
-            var totalPhysicalMemoryBytes = SystemMemory.GetTotalPhysicalMemoryBytes();
 
             if (process.ExitCode != 0)
             {
@@ -374,18 +418,23 @@ static class NativeRunner
                 throw new NativeInferenceException($"Piper synthesis failed: {detail.Trim()}");
             }
 
-            var elapsedMs = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 1);
-            var cpuCoreEquivalents = cpuTimeMs / Math.Max(stopwatch.Elapsed.TotalMilliseconds, 1);
-            return new ProcessMetrics(
-                elapsedMs,
-                Math.Round(cpuTimeMs, 1),
-                Math.Round(cpuCoreEquivalents / Environment.ProcessorCount * 100, 1),
-                Math.Round(cpuCoreEquivalents, 2),
-                Environment.ProcessorCount,
-                Math.Round(peakWorkingSetBytes / 1024d / 1024d, 1),
-                Math.Round(totalPhysicalMemoryBytes / 1024d / 1024d, 1),
-                Math.Round(peakWorkingSetBytes / (double)Math.Max(totalPhysicalMemoryBytes, 1) * 100, 2));
+            return CreateMetrics(stopwatch.Elapsed.TotalMilliseconds, cpuTimeMs, peakWorkingSetBytes);
         }
+    }
+
+    private static ProcessMetrics CreateMetrics(double elapsedMs, double cpuTimeMs, long peakWorkingSetBytes)
+    {
+        var totalPhysicalMemoryBytes = SystemMemory.GetTotalPhysicalMemoryBytes();
+        var cpuCoreEquivalents = cpuTimeMs / Math.Max(elapsedMs, 1);
+        return new ProcessMetrics(
+            Math.Round(elapsedMs, 1),
+            Math.Round(cpuTimeMs, 1),
+            Math.Round(cpuCoreEquivalents / Environment.ProcessorCount * 100, 1),
+            Math.Round(cpuCoreEquivalents, 2),
+            Environment.ProcessorCount,
+            Math.Round(peakWorkingSetBytes / 1024d / 1024d, 1),
+            Math.Round(totalPhysicalMemoryBytes / 1024d / 1024d, 1),
+            Math.Round(peakWorkingSetBytes / (double)Math.Max(totalPhysicalMemoryBytes, 1) * 100, 2));
     }
 }
 

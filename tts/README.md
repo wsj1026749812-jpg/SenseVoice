@@ -51,6 +51,10 @@ used on average during that synthesis.
 For real streaming, send the same JSON to `/api/v1/tts/stream`. The endpoint
 returns raw 16-bit little-endian, mono PCM (`audio/L16`) at 22050 Hz. The
 headers `X-Audio-Sample-Rate` and `X-Audio-Channels` describe the stream.
+`X-Stream-Request-Id` identifies the completed resource metrics available from
+`GET /api/v1/tts/stream/metrics/{requestId}`. The browser combines those server
+metrics with client-side first-byte, first-playable, stutter, and streaming RTF
+measurements.
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:50100/api/v1/tts/stream -H "Content-Type: application/json" -d "{\"text\":\"流式语音测试\"}" --output output.pcm

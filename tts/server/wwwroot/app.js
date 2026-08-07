@@ -108,7 +108,7 @@ function decodePcm(buffer, sampleRate) {
 }
 
 function queuePcm(buffer, sampleRate) {
-  if (!buffer.byteLength) return 0;
+  if (!buffer.byteLength) return { duration: 0, startAt: state.audioContext.currentTime };
   const audioBuffer = decodePcm(buffer, sampleRate);
   const source = state.audioContext.createBufferSource();
   source.buffer = audioBuffer;
@@ -116,7 +116,19 @@ function queuePcm(buffer, sampleRate) {
   const startAt = Math.max(state.audioContext.currentTime + 0.04, state.streamNextTime);
   source.start(startAt);
   state.streamNextTime = startAt + audioBuffer.duration;
-  return audioBuffer.duration;
+  return { duration: audioBuffer.duration, startAt };
+}
+
+async function waitForStreamMetrics(requestId) {
+  if (!requestId) return null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const response = await fetch(`/api/v1/tts/stream/metrics/${encodeURIComponent(requestId)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok && payload.status === "complete") return payload.metrics;
+    if (response.status !== 202) throw new Error(payload.detail || `无法读取流式指标 (${response.status})`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("流式资源指标尚未就绪。");
 }
 
 async function streamAudio() {
@@ -130,6 +142,7 @@ async function streamAudio() {
   try {
     const response = await api("/api/v1/tts/stream", payload);
     const sampleRate = Number(response.headers.get("X-Audio-Sample-Rate") || 22050);
+    const requestId = response.headers.get("X-Stream-Request-Id");
     if (!response.body) throw new Error("浏览器不支持流式响应。");
     state.audioContext ||= new AudioContext();
     await state.audioContext.resume();
@@ -137,25 +150,45 @@ async function streamAudio() {
     const reader = response.body.getReader();
     let remainder = new Uint8Array(0);
     let audioSeconds = 0;
+    let firstByteMs = null;
+    let firstPlayableMs = null;
+    let queuedChunks = 0;
+    let stutterCount = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (firstByteMs === null && value.byteLength) firstByteMs = performance.now() - start;
       const combined = new Uint8Array(remainder.length + value.length);
       combined.set(remainder);
       combined.set(value, remainder.length);
       const usableLength = combined.length - (combined.length % 2);
-      if (usableLength) audioSeconds += queuePcm(combined.slice(0, usableLength).buffer, sampleRate);
+      if (usableLength) {
+        if (queuedChunks && state.audioContext.currentTime > state.streamNextTime + 0.02) stutterCount += 1;
+        const queued = queuePcm(combined.slice(0, usableLength).buffer, sampleRate);
+        audioSeconds += queued.duration;
+        queuedChunks += 1;
+        if (firstPlayableMs === null) {
+          firstPlayableMs = performance.now() - start + Math.max(0, queued.startAt - state.audioContext.currentTime) * 1000;
+        }
+      }
       remainder = combined.slice(usableLength);
     }
     const elapsed = performance.now() - start;
+    const serverMetrics = await waitForStreamMetrics(requestId);
+    const streamElapsedMs = serverMetrics?.elapsedMs || elapsed;
+    const streamRtf = streamElapsedMs / Math.max(audioSeconds * 1000, 1);
     $("#metrics").classList.remove("empty");
     $("#metrics").innerHTML = [
+      ["首包延迟", firstByteMs === null ? "--" : formatMs(firstByteMs)],
+      ["首次可播放延迟", firstPlayableMs === null ? "--" : formatMs(firstPlayableMs)],
+      ["播放卡顿", stutterCount ? `是（${stutterCount} 次）` : "否"],
+      ["流式 RTF", decimal(streamRtf, 3)],
+      ["CPU 占用", serverMetrics ? `${decimal(serverMetrics.cpuUtilizationPercent)}%` : "--"],
+      ["峰值内存", serverMetrics ? `${decimal(serverMetrics.peakWorkingSetMb)} MB` : "--"],
+      ["内存占用率", serverMetrics ? `${decimal(serverMetrics.memoryUtilizationPercent, 2)}%` : "--"],
       ["流式音频", `${decimal(audioSeconds, 2)} s`],
-      ["首尾请求耗时", formatMs(elapsed)],
-      ["数据格式", `${sampleRate} Hz / PCM`],
-      ["播放状态", "已排队"],
     ].map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
-    setStatus("流式音频已开始播放。");
+    setStatus("流式合成完成，音频正在播放或已排队。");
   } catch (error) {
     setStatus(error.message, true);
   } finally {
