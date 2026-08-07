@@ -15,6 +15,8 @@ var inferenceGate = new SemaphoreSlim(1, 1);
 var streamMetrics = new ConcurrentDictionary<string, StreamMetricState>();
 
 Directory.CreateDirectory(config.OutputDirectory);
+var worker = await TtsWorker.StartAsync(config, CancellationToken.None);
+app.Lifetime.ApplicationStopping.Register(worker.Dispose);
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -25,6 +27,11 @@ app.MapGet("/health", () => Results.Ok(new
     status = "ok",
     device = "cpu",
     runtime = "Piper/ONNX Runtime",
+    worker = new
+    {
+        persistent = true,
+        process_id = worker.ProcessId,
+    },
     streaming = new
     {
         supported = true,
@@ -65,7 +72,7 @@ app.MapPost("/api/v1/tts", async (HttpRequest request, CancellationToken cancell
     await inferenceGate.WaitAsync(cancellationToken);
     try
     {
-        var result = await NativeRunner.SynthesizeAsync(config, synthesisRequest.Value!, cancellationToken);
+        var result = await worker.SynthesizeAsync(synthesisRequest.Value!, cancellationToken);
         return Results.Ok(result);
     }
     catch (NativeInferenceException exception)
@@ -109,7 +116,7 @@ app.MapPost("/api/v1/tts/stream", async (HttpContext context, CancellationToken 
         context.Response.Headers.Append("X-Stream-Request-Id", requestId);
         context.Response.Headers.Append("Access-Control-Expose-Headers", "X-Audio-Sample-Rate, X-Audio-Channels, X-Stream-Request-Id");
         context.Response.Headers.Append("Cache-Control", "no-store");
-        var metrics = await NativeRunner.StreamAsync(config, synthesisRequest.Value!, context.Response.Body, cancellationToken);
+        var metrics = await worker.StreamAsync(synthesisRequest.Value!, context.Response.Body, cancellationToken);
         streamMetrics[requestId] = new StreamMetricState(DateTime.UtcNow, metrics, null);
     }
     catch (NativeInferenceException exception)
@@ -292,26 +299,91 @@ sealed class TtsApiRequest
 [JsonSerializable(typeof(TtsApiRequest))]
 internal partial class AppJsonContext : JsonSerializerContext;
 
-static class NativeRunner
+sealed class TtsWorker : IDisposable
 {
-    public static async Task<TtsResult> SynthesizeAsync(ServiceConfig config, TtsInput input, CancellationToken cancellationToken)
+    private readonly ServiceConfig config;
+    private readonly Process process;
+    private readonly Stream input;
+    private readonly Stream output;
+    private readonly Task<string> standardErrorTask;
+    private int disposed;
+
+    private TtsWorker(ServiceConfig config, Process process)
     {
+        this.config = config;
+        this.process = process;
+        input = process.StandardInput.BaseStream;
+        output = process.StandardOutput.BaseStream;
+        standardErrorTask = process.StandardError.ReadToEndAsync();
+    }
+
+    public int ProcessId => process.Id;
+
+    public static async Task<TtsWorker> StartAsync(ServiceConfig config, CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = config.PythonPath,
+            WorkingDirectory = Path.GetDirectoryName(config.RunnerPath)!,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardInputEncoding = Encoding.UTF8,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        startInfo.ArgumentList.Add(config.RunnerPath);
+        startInfo.ArgumentList.Add("--worker");
+        startInfo.ArgumentList.Add("--model");
+        startInfo.ArgumentList.Add(config.ModelPath);
+        startInfo.ArgumentList.Add("--config");
+        startInfo.ArgumentList.Add(config.ModelConfigPath);
+        startInfo.Environment["PYTHONUTF8"] = "1";
+        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
+
+        var process = Process.Start(startInfo) ?? throw new NativeInferenceException("Could not start the persistent Piper worker.");
+        var worker = new TtsWorker(config, process);
+        try
+        {
+            using var startupTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            startupTimeout.CancelAfter(TimeSpan.FromMinutes(2));
+            var ready = await worker.ReadResponseAsync(startupTimeout.Token);
+            EnsureSuccess(ready, expectedStatus: "ready");
+            await worker.WarmUpAsync(startupTimeout.Token);
+            return worker;
+        }
+        catch
+        {
+            worker.Dispose();
+            throw;
+        }
+    }
+
+    public async Task<TtsResult> SynthesizeAsync(TtsInput request, CancellationToken cancellationToken)
+    {
+        EnsureAlive();
         var fileName = $"tts-{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}.wav";
         var outputPath = Path.Combine(config.OutputDirectory, fileName);
         try
         {
-            var process = StartProcess(config, input, outputPath, stream: false);
-            var metrics = await RunToCompletionAsync(process, cancellationToken);
+            var metrics = await MeasureAsync(async () =>
+            {
+                await WriteCommandAsync(WorkerCommand.Wav(request, outputPath), CancellationToken.None);
+                EnsureSuccess(await ReadResponseAsync(CancellationToken.None));
+            });
+            cancellationToken.ThrowIfCancellationRequested();
             if (!File.Exists(outputPath))
             {
-                throw new NativeInferenceException("Piper synthesis completed without producing a WAV file.");
+                throw new NativeInferenceException("Piper worker completed without producing a WAV file.");
             }
 
             var audioDurationMs = WavReader.GetDurationMs(outputPath, config.SampleRate);
             return new TtsResult
             {
                 Filename = fileName,
-                Text = input.Text,
+                Text = request.Text,
                 AudioUrl = $"/audio/{fileName}",
                 DownloadUrl = $"/audio/{fileName}",
                 SampleRate = config.SampleRate,
@@ -325,7 +397,7 @@ static class NativeRunner
                 TotalPhysicalMemoryMb = metrics.TotalPhysicalMemoryMb,
                 MemoryUtilizationPercent = metrics.MemoryUtilizationPercent,
                 RealTimeFactor = Math.Round(metrics.ElapsedMs / Math.Max(audioDurationMs, 1), 4),
-                CharactersPerSecond = Math.Round(input.Text.Length / Math.Max(metrics.ElapsedMs / 1000, 0.001), 2),
+                CharactersPerSecond = Math.Round(request.Text.Length / Math.Max(metrics.ElapsedMs / 1000, 0.001), 2),
             };
         }
         catch
@@ -335,90 +407,173 @@ static class NativeRunner
         }
     }
 
-    public static async Task<ProcessMetrics> StreamAsync(ServiceConfig config, TtsInput input, Stream output, CancellationToken cancellationToken)
+    public async Task<ProcessMetrics> StreamAsync(TtsInput request, Stream destination, CancellationToken cancellationToken)
     {
-        using var process = StartProcess(config, input, outputPath: null, stream: true);
-        var stopwatch = Stopwatch.StartNew();
-        var peakWorkingSetTask = ProcessMemory.TrackPeakWorkingSetAsync(process, cancellationToken);
-        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        var copyTask = process.StandardOutput.BaseStream.CopyToAsync(output, cancellationToken);
-        await Task.WhenAll(copyTask, process.WaitForExitAsync(cancellationToken));
-        var error = await errorTask;
-        stopwatch.Stop();
-        var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
-        var peakWorkingSetBytes = await peakWorkingSetTask;
-        if (process.ExitCode != 0)
+        EnsureAlive();
+        return await MeasureAsync(async () =>
         {
-            throw new NativeInferenceException($"Piper streaming synthesis failed: {error.Trim()}");
+            await WriteCommandAsync(WorkerCommand.Stream(request), CancellationToken.None);
+            var discardOutput = false;
+            while (true)
+            {
+                var length = await ReadUInt32Async(output, CancellationToken.None);
+                if (length == 0) break;
+                if (length > 16 * 1024 * 1024)
+                {
+                    throw new NativeInferenceException("Persistent Piper worker returned an invalid stream frame.");
+                }
+                var payload = new byte[length];
+                await ReadExactlyAsync(output, payload, CancellationToken.None);
+                if (!discardOutput)
+                {
+                    try
+                    {
+                        await destination.WriteAsync(payload, cancellationToken);
+                        await destination.FlushAsync(cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        discardOutput = true;
+                    }
+                    catch (IOException)
+                    {
+                        discardOutput = true;
+                    }
+                }
+            }
+            EnsureSuccess(await ReadResponseAsync(CancellationToken.None));
+        });
+    }
+
+    private async Task WarmUpAsync(CancellationToken cancellationToken)
+    {
+        var warmupPath = Path.Combine(config.OutputDirectory, $"warmup-{Guid.NewGuid():N}.wav");
+        try
+        {
+            var request = new TtsInput("预热。", 1.0, 0.667, 0.8);
+            await WriteCommandAsync(WorkerCommand.Wav(request, warmupPath), cancellationToken);
+            EnsureSuccess(await ReadResponseAsync(cancellationToken));
         }
+        finally
+        {
+            File.Delete(warmupPath);
+        }
+    }
+
+    private async Task<ProcessMetrics> MeasureAsync(Func<Task> operation)
+    {
+        EnsureAlive();
+        process.Refresh();
+        var cpuStartMs = process.TotalProcessorTime.TotalMilliseconds;
+        using var sampling = new CancellationTokenSource();
+        var peakTask = ProcessMemory.TrackPeakWorkingSetAsync(process, sampling.Token);
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await operation();
+        }
+        finally
+        {
+            stopwatch.Stop();
+            sampling.Cancel();
+        }
+        var peakWorkingSetBytes = await peakTask;
+        process.Refresh();
+        var cpuTimeMs = Math.Max(0, process.TotalProcessorTime.TotalMilliseconds - cpuStartMs);
         return CreateMetrics(stopwatch.Elapsed.TotalMilliseconds, cpuTimeMs, peakWorkingSetBytes);
     }
 
-    private static Process StartProcess(ServiceConfig config, TtsInput input, string? outputPath, bool stream)
+    private async Task WriteCommandAsync(WorkerCommand command, CancellationToken cancellationToken)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = config.PythonPath,
-            WorkingDirectory = Path.GetDirectoryName(config.RunnerPath)!,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        startInfo.ArgumentList.Add(config.RunnerPath);
-        startInfo.Environment["PYTHONUTF8"] = "1";
-        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
-        startInfo.ArgumentList.Add("--model");
-        startInfo.ArgumentList.Add(config.ModelPath);
-        startInfo.ArgumentList.Add("--config");
-        startInfo.ArgumentList.Add(config.ModelConfigPath);
-        startInfo.ArgumentList.Add("--length-scale");
-        startInfo.ArgumentList.Add(input.LengthScale.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        startInfo.ArgumentList.Add("--noise-scale");
-        startInfo.ArgumentList.Add(input.NoiseScale.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        startInfo.ArgumentList.Add("--noise-w-scale");
-        startInfo.ArgumentList.Add(input.NoiseWScale.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        if (stream)
-        {
-            startInfo.ArgumentList.Add("--stream");
-        }
-        else
-        {
-            startInfo.ArgumentList.Add("--output");
-            startInfo.ArgumentList.Add(outputPath!);
-        }
-
-        var process = Process.Start(startInfo) ?? throw new NativeInferenceException("Could not start the bundled Piper runtime.");
-        process.StandardInput.Write(input.Text);
-        process.StandardInput.Close();
-        return process;
+        var payload = JsonSerializer.SerializeToUtf8Bytes(command);
+        await input.WriteAsync(payload, cancellationToken);
+        await input.WriteAsync(new byte[] { (byte)'\n' }, cancellationToken);
+        await input.FlushAsync(cancellationToken);
     }
 
-    private static async Task<ProcessMetrics> RunToCompletionAsync(Process process, CancellationToken cancellationToken)
+    private async Task<JsonDocument> ReadResponseAsync(CancellationToken cancellationToken)
     {
-        using (process)
+        var line = await ReadLineAsync(output, cancellationToken);
+        if (line.Length == 0)
         {
-            var stopwatch = Stopwatch.StartNew();
-            var peakWorkingSetTask = ProcessMemory.TrackPeakWorkingSetAsync(process, cancellationToken);
-            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
-            var standardOutput = await outputTask;
-            var standardError = await errorTask;
-            stopwatch.Stop();
-            var cpuTimeMs = process.TotalProcessorTime.TotalMilliseconds;
-            var peakWorkingSetBytes = await peakWorkingSetTask;
+            var error = standardErrorTask.IsCompletedSuccessfully ? standardErrorTask.Result.Trim() : "worker output ended unexpectedly";
+            throw new NativeInferenceException($"Persistent Piper worker stopped: {error}");
+        }
+        try
+        {
+            return JsonDocument.Parse(line);
+        }
+        catch (JsonException exception)
+        {
+            throw new NativeInferenceException($"Persistent Piper worker returned invalid JSON: {exception.Message}");
+        }
+    }
 
-            if (process.ExitCode != 0)
-            {
-                var detail = string.IsNullOrWhiteSpace(standardError) ? standardOutput : standardError;
-                throw new NativeInferenceException($"Piper synthesis failed: {detail.Trim()}");
-            }
+    private static void EnsureSuccess(JsonDocument response, string expectedStatus = "ok")
+    {
+        using (response)
+        {
+            var root = response.RootElement;
+            var status = root.TryGetProperty("status", out var statusValue) ? statusValue.GetString() : null;
+            if (string.Equals(status, expectedStatus, StringComparison.Ordinal)) return;
+            var detail = root.TryGetProperty("detail", out var detailValue) ? detailValue.GetString() : null;
+            throw new NativeInferenceException(detail ?? $"Persistent Piper worker returned status '{status ?? "unknown"}'.");
+        }
+    }
 
-            return CreateMetrics(stopwatch.Elapsed.TotalMilliseconds, cpuTimeMs, peakWorkingSetBytes);
+    private void EnsureAlive()
+    {
+        if (Volatile.Read(ref disposed) != 0 || process.HasExited)
+        {
+            var error = standardErrorTask.IsCompletedSuccessfully ? standardErrorTask.Result.Trim() : "process is not running";
+            throw new NativeInferenceException($"Persistent Piper worker is unavailable: {error}");
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        try
+        {
+            input.Dispose();
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            // Best effort during service shutdown.
+        }
+        process.Dispose();
+    }
+
+    private static async Task<byte[]> ReadLineAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        using var line = new MemoryStream();
+        var oneByte = new byte[1];
+        while (true)
+        {
+            var read = await stream.ReadAsync(oneByte, cancellationToken);
+            if (read == 0) return line.ToArray();
+            if (oneByte[0] == (byte)'\n') return line.ToArray();
+            if (oneByte[0] != (byte)'\r') line.WriteByte(oneByte[0]);
+            if (line.Length > 64 * 1024) throw new NativeInferenceException("Persistent Piper worker response was too large.");
+        }
+    }
+
+    private static async Task<uint> ReadUInt32Async(Stream stream, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[4];
+        await ReadExactlyAsync(stream, buffer, cancellationToken);
+        return BitConverter.ToUInt32(buffer, 0);
+    }
+
+    private static async Task ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
+    {
+        var offset = 0;
+        while (offset < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(offset), cancellationToken);
+            if (read == 0) throw new NativeInferenceException("Persistent Piper worker output ended unexpectedly.");
+            offset += read;
         }
     }
 
@@ -436,6 +591,21 @@ static class NativeRunner
             Math.Round(totalPhysicalMemoryBytes / 1024d / 1024d, 1),
             Math.Round(peakWorkingSetBytes / (double)Math.Max(totalPhysicalMemoryBytes, 1) * 100, 2));
     }
+}
+
+sealed record WorkerCommand(
+    [property: JsonPropertyName("mode")] string Mode,
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("length_scale")] double LengthScale,
+    [property: JsonPropertyName("noise_scale")] double NoiseScale,
+    [property: JsonPropertyName("noise_w_scale")] double NoiseWScale,
+    [property: JsonPropertyName("output")] string? Output)
+{
+    public static WorkerCommand Wav(TtsInput input, string output) =>
+        new("wav", input.Text, input.LengthScale, input.NoiseScale, input.NoiseWScale, output);
+
+    public static WorkerCommand Stream(TtsInput input) =>
+        new("stream", input.Text, input.LengthScale, input.NoiseScale, input.NoiseWScale, null);
 }
 
 sealed record ProcessMetrics(
@@ -491,19 +661,28 @@ static class ProcessMemory
     public static async Task<long> TrackPeakWorkingSetAsync(Process process, CancellationToken cancellationToken)
     {
         long peak = 0;
-        while (true)
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 if (process.HasExited) return peak;
+                process.Refresh();
                 peak = Math.Max(peak, process.WorkingSet64);
             }
             catch (InvalidOperationException)
             {
                 return peak;
             }
-            await Task.Delay(25, cancellationToken);
+            try
+            {
+                await Task.Delay(25, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
         }
+        return peak;
     }
 }
 

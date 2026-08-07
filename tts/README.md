@@ -13,6 +13,12 @@ Extract `PiperTtsLite-windows-x64.zip`, then double-click
 `http://127.0.0.1:50100`. Open that address in Edge or Chrome for the bundled
 text-to-speech, streaming playback, and single-run resource metrics page.
 
+At startup, the service loads the Piper model into one persistent worker and
+runs a short warm-up synthesis. Startup therefore takes a little longer, but
+later requests reuse the loaded model instead of loading it again. Keeping the
+model resident also means that the service continues to occupy its normal
+model memory while it is idle; use `Stop-PiperTtsLite.ps1` to release it.
+
 To use another port or allow LAN clients:
 
 ```powershell
@@ -47,6 +53,13 @@ The response contains `audio_url`, `audio_duration_ms`, `inference_ms`,
 the machine-wide percentage users expect from Task Manager. The separate
 `cpu_core_equivalents` value shows how many logical CPU cores the Piper process
 used on average during that synthesis.
+
+Memory values come from the persistent Piper worker's refreshed Windows working
+set, not only from the small .NET web process. `peak_working_set_mb` is the
+highest sampled resident working set during the request, sampled about every
+25 ms, and `memory_utilization_percent` divides that value by the computer's
+total physical memory. Because the model stays loaded, this is a process-level
+resident-memory peak rather than memory newly allocated by that request.
 
 For real streaming, send the same JSON to `/api/v1/tts/stream`. The endpoint
 returns raw 16-bit little-endian, mono PCM (`audio/L16`) at 22050 Hz. The
