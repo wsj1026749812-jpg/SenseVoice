@@ -265,6 +265,7 @@ static class ProcessMemory
             try
             {
                 if (process.HasExited) return peak;
+                process.Refresh();
                 peak = Math.Max(peak, process.WorkingSet64);
             }
             catch (InvalidOperationException)

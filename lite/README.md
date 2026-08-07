@@ -47,6 +47,10 @@ Use `Stop-SenseVoiceLite.ps1` to stop the background service.
   every transcription. CPU percentage is normalized across logical processors;
   `cpu_core_equivalents` reports the corresponding multi-core process load.
 - `peak_working_set_mb` reports the native inference process's peak resident
-  memory. `memory_utilization_percent` divides that peak by total physical RAM.
+  memory. The process data is refreshed at each sample (about every 25 ms), so
+  the value includes the GGUF model and inference runtime instead of a cached
+  startup working set. `memory_utilization_percent` divides that peak by total
+  physical RAM. SenseVoice starts a native process for each request, so this is
+  the request process's peak rather than idle service memory.
 - The bundled GGUF runtime is offline-only. `/health` reports streaming as not
   supported.
