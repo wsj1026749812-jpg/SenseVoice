@@ -66,7 +66,9 @@ def worker_main(args: argparse.Namespace) -> int:
     for raw_line in sys.stdin.buffer:
         mode = "unknown"
         try:
-            command = json.loads(raw_line.decode("utf-8"))
+            # .NET may prefix the first StandardInput write with a UTF-8 BOM.
+            # utf-8-sig accepts that first command and behaves like utf-8 otherwise.
+            command = json.loads(raw_line.decode("utf-8-sig"))
             mode = str(command.get("mode", ""))
             text = str(command.get("text", "")).strip()
             if not text:
