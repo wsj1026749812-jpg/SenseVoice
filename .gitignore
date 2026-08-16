@@ -11,5 +11,9 @@ tts/staging/
 tts/dist/
 tts/server/bin/
 tts/server/obj/
+streaming/staging/
+streaming/dist/
+streaming/server/bin/
+streaming/server/obj/
 models/
 cache/

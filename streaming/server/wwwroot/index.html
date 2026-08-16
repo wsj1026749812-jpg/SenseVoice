@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sherpa 流式语音识别</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Windows CPU · Offline</p>
+        <h1>Sherpa 流式语音识别</h1>
+      </div>
+      <div class="health" id="healthStatus">正在检查服务</div>
+    </header>
+
+    <section class="workspace" aria-label="流式识别">
+      <aside class="controls">
+        <label for="hotwords">热词 / 业务词</label>
+        <textarea id="hotwords" rows="8" placeholder="每行一个词或短语&#10;例如：深度学习&#10;语音识别"></textarea>
+        <p class="field-note">热词会影响当前一次识别会话。</p>
+
+        <div class="actions">
+          <button id="startMic" class="primary" type="button">开始听写</button>
+          <button id="stopMic" type="button" disabled>停止</button>
+          <button id="clearText" class="quiet" type="button">清空文本</button>
+        </div>
+
+        <label for="audioFile">WAV 文件验证</label>
+        <input id="audioFile" type="file" accept="audio/wav">
+        <button id="startFile" type="button" disabled>识别文件</button>
+        <p class="field-note">文件会通过同一个流式接口发送。</p>
+      </aside>
+
+      <section class="transcript" aria-live="polite">
+        <div class="transcript-head">
+          <h2>识别结果</h2>
+          <span id="sourceStatus">空闲</span>
+        </div>
+        <div id="finalText" class="final-text" aria-label="最终识别文本"></div>
+        <div id="partialText" class="partial-text" aria-label="实时识别文本"></div>
+      </section>
+    </section>
+
+    <section class="metrics" aria-label="会话指标">
+      <div><span>会话耗时</span><strong id="elapsedMetric">-</strong></div>
+      <div><span>CPU 占用</span><strong id="cpuMetric">-</strong></div>
+      <div><span>服务工作集</span><strong id="serviceMemoryMetric">-</strong></div>
+      <div><span>整机内存</span><strong id="machineMemoryMetric">-</strong></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
